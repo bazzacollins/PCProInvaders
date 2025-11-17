@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Retro Space Invaders – Floppy vs Mouse</title>
+  <style>
+    :root {
+      --bg: #050505;
+      --grid: #0f1f0f;
+      --primary: #7CFC00;
+      --accent: #00ffd0;
+      --danger: #ff5c5c;
+      --text: #e0ffe0;
+    }
+
+    * {
+      box-sizing: border-box;
+      padding: 0;
+      margin: 0;
+    }
+
+    body {
+      background: radial-gradient(circle at top, #182818 0, var(--bg) 55%);
+      color: var(--text);
+      font-family: "Courier New", monospace;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .wrapper {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      align-items: center;
+    }
+
+    #hud {
+      display: flex;
+      justify-content: space-between;
+      width: 800px;
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    #hud span.label {
+      color: var(--accent);
+      margin-right: 4px;
+    }
+
+    #gameCanvas {
+      border-radius: 8px;
+      background:
+        linear-gradient(90deg, var(--grid) 1px, transparent 1px) 0 0 / 32px 32px repeat,
+        linear-gradient(180deg, var(--grid) 1px, transparent 1px) 0 0 / 32px 32px repeat,
+        #020402;
+      border: 2px solid var(--primary);
+      box-shadow: 0 0 20px rgba(124, 252, 0, 0.3);
+    }
+
+    #help {
+      width: 800px;
+      font-size: 13px;
+      color: #a0e0a0;
+      display: flex;
+      justify-content: space-between;
+      opacity: 0.9;
+    }
+
+    #help span {
+      white-space: nowrap;
+    }
+
+    .badge {
+      border: 1px solid var(--accent);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      opacity: 0.9;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div id="hud">
+      <div>
+        <span class="label">Score:</span><span id="score">0000</span>
+      </div>
+      <div>
+        <span class="label">Lives:</span><span id="lives">3</span>
+      </div>
+      <div>
+        <span class="label">Level:</span><span id="level">1</span>
+      </div>
+      <div class="badge">Floppy vs Mouse</div>
+    </div>
+
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+
+    <div id="help">
+      <span>← → Move</span>
+      <span>Space: Fire</span>
+      <span>Enter: Start / Restart</span>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+
+    const scoreEl = document.getElementById("score");
+    const livesEl = document.getElementById("lives");
+    const levelEl = document.getElementById("level");
+
+    const WIDTH = canvas.width;
+    const HEIGHT = canvas.height;
+
+    const KEY = {
+      LEFT: "ArrowLeft",
+      RIGHT: "ArrowRight",
+      SPACE: " ",
+      SPACE_ALT: "Space",
+      ENTER: "Enter",
+    };
+
+    const state = {
+      running: false,
+      gameOver: false,
+      score: 0,
+      lives: 3,
+      level: 1,
+      lastTime: 0,
+      shootCooldown: 0,
+      enemyShootCooldown: 0,
+      pcProSpawnTimer: 0,
+    };
+
+    const keysPressed = {};
+
+    const player = {
+      width: 60,
+      height: 26,
+      x: WIDTH / 2 - 30,
+      y: HEIGHT - 70,
+      speed: 260,
+    };
+
+    let playerBullets = [];
+    let enemyBullets = [];
+    let enemies = [];
+
+    const ENEMY_ROWS_BASE = 4;
+    const ENEMY_COLS = 11;
+    const ENEMY_HORIZONTAL_PADDING = 50;
+    const ENEMY_VERTICAL_PADDING = 40;
+    const ENEMY_X_SPACING = 56;
+    const ENEMY_Y_SPACING = 46;
+    const ENEMY_BASE_SPEED = 40;
+
+    const PLAYER_BULLET_SPEED = 420;
+    const ENEMY_BULLET_SPEED = 240;
+    const SHOOT_COOLDOWN_TIME = 0.35; // seconds
+    const ENEMY_SHOOT_COOLDOWN_TIME = 0.8;
+    const ENEMY_STEP_DOWN = 22;
+
+    // PC Pro bonus ship
+    const PC_PRO_SPEED = 220;
+    const PC_PRO_SCORE = 100;
+    const PC_PRO_MIN_DELAY = 8;  // seconds
+    const PC_PRO_MAX_DELAY = 20; // seconds
+
+    const pcPro = {
+      active: false,
+      x: 0,
+      y: 40,
+      width: 96,
+      height: 30,
+      speed: PC_PRO_SPEED,
+      direction: 1,
+    };
+
+    function resetGame(fullReset = true) {
+      state.running = false;
+      state.gameOver = false;
+      state.lastTime = 0;
+      state.shootCooldown = 0;
+      state.enemyShootCooldown = 0;
+      playerBullets = [];
+      enemyBullets = [];
+      pcPro.active = false;
+      state.pcProSpawnTimer = PC_PRO_MIN_DELAY + Math.random() * (PC_PRO_MAX_DELAY - PC_PRO_MIN_DELAY);
+
+      if (fullReset) {
+        state.score = 0;
+        state.lives = 3;
+        state.level = 1;
+      }
+      livesEl.textContent = state.lives;
+      levelEl.textContent = state.level;
+      scoreEl.textContent = state.score.toString().padStart(4, "0");
+      initEnemies();
+      drawIntroScreen();
+    }
+
+    function initEnemies() {
+      enemies = [];
+      const rows = ENEMY_ROWS_BASE + state.level - 1; // add a row each level
+      const startX = ENEMY_HORIZONTAL_PADDING;
+      const startY = 80;
+      for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < ENEMY_COLS; col++) {
+          const enemyWidth = 42;
+          const enemyHeight = 32;
+          enemies.push({
+            x: startX + col * ENEMY_X_SPACING,
+            y: startY + row * ENEMY_Y_SPACING,
+            width: enemyWidth,
+            height: enemyHeight,
+            alive: true,
+          });
+        }
+      }
+      state.enemyDirection = 1;
+      state.enemySpeed = ENEMY_BASE_SPEED + (state.level - 1) * 12;
+    }
+
+    function drawMouse(p) {
+      // Mouse body
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.fillStyle = "#d8f8ff";
+      ctx.strokeStyle = "#0b2030";
+      ctx.lineWidth = 2;
+
+      // main body
+      const bodyW = p.width;
+      const bodyH = p.height;
+      const radius = 12;
+
+      ctx.beginPath();
+      ctx.moveTo(radius, 0);
+      ctx.lineTo(bodyW - radius, 0);
+      ctx.quadraticCurveTo(bodyW, 0, bodyW, radius);
+      ctx.lineTo(bodyW, bodyH);
+      ctx.lineTo(0, bodyH);
+      ctx.lineTo(0, radius);
+      ctx.quadraticCurveTo(0, 0, radius, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // left / right buttons line
+      ctx.beginPath();
+      ctx.moveTo(bodyW / 2, 3);
+      ctx.lineTo(bodyW / 2, bodyH * 0.45);
+      ctx.stroke();
+
+      // scroll wheel
+      ctx.beginPath();
+      ctx.arc(bodyW / 2, bodyH * 0.3, 2.4, 0, Math.PI * 2);
+      ctx.fillStyle = "#0b2030";
+      ctx.fill();
+
+      // cable
+      ctx.beginPath();
+      ctx.strokeStyle = "#7CFC00";
+      ctx.lineWidth = 2;
+      ctx.moveTo(bodyW / 2, -6);
+      ctx.bezierCurveTo(bodyW / 2 - 10, -18, bodyW / 2 + 10, -28, bodyW / 2 - 6, -40);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    function drawFloppy(e) {
+      ctx.save();
+      ctx.translate(e.x, e.y);
+      const w = e.width;
+      const h = e.height;
+
+      // --- Outer shell (3.5" floppy shape) ---
+      ctx.fillStyle = "#111827"; // dark navy body
+      ctx.strokeStyle = "#00ffd0"; // bright outline
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.rect(0, 0, w, h);
+      ctx.fill();
+      ctx.stroke();
+
+      // --- Metal shutter at the top ---
+      const shutterH = h * 0.25;
+      ctx.fillStyle = "#c7d2e0";
+      ctx.fillRect(0, 0, w, shutterH);
+
+      // Shutter slot
+      ctx.fillStyle = "#8b96a3";
+      const slotW = w * 0.65;
+      const slotH = shutterH * 0.28;
+      ctx.fillRect((w - slotW) / 2, shutterH * 0.32, slotW, slotH);
+
+      // Shutter side cut-out
+      ctx.fillStyle = "#56606b";
+      const cutoutW = w * 0.18;
+      const cutoutH = shutterH * 0.5;
+      ctx.fillRect(w - cutoutW - 4, shutterH * 0.15, cutoutW, cutoutH);
+
+      // --- Central circular hub window ---
+      const hubSize = h * 0.3;
+      const hubX = (w - hubSize) / 2;
+      const hubY = shutterH + h * 0.04;
+
+      // Hub window border
+      ctx.fillStyle = "#1f2933";
+      ctx.fillRect(hubX, hubY, hubSize, hubSize);
+
+      // Metallic hub circle
+      ctx.beginPath();
+      ctx.fillStyle = "#d1d9e6";
+      ctx.arc(w / 2, hubY + hubSize / 2, hubSize * 0.32, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Inner hub hole
+      ctx.beginPath();
+      ctx.fillStyle = "#4b5563";
+      ctx.arc(w / 2, hubY + hubSize / 2, hubSize * 0.13, 0, Math.PI * 2);
+      ctx.fill();
+
+      // --- Label area at the bottom ---
+      const labelH = h * 0.28;
+      const labelY = h - labelH - 4;
+      ctx.fillStyle = "#f5f5f4";
+      ctx.fillRect(w * 0.08, labelY, w * 0.84, labelH);
+
+      // Label lines
+      ctx.strokeStyle = "#d4d4cf";
+      ctx.lineWidth = 1;
+      const lineCount = 4;
+      for (let i = 0; i < lineCount; i++) {
+        const y = labelY + labelH * 0.2 + i * (labelH * 0.18);
+        ctx.beginPath();
+        ctx.moveTo(w * 0.12, y);
+        ctx.lineTo(w * 0.88, y);
+        ctx.stroke();
+      }
+
+      // Colour stripe on label for extra 90s flavour
+      ctx.fillStyle = "#22c55e";
+      ctx.fillRect(w * 0.12, labelY + labelH * 0.06, w * 0.26, labelH * 0.16);
+
+      // --- Write-protect notch (bottom right) ---
+      const notchW = w * 0.14;
+      const notchH = h * 0.16;
+      const notchX = w - notchW - 6;
+      const notchY = h - notchH - 6;
+      ctx.fillStyle = "#020617";
+      ctx.fillRect(notchX, notchY, notchW, notchH);
+
+      // Small indicator dot inside notch
+      ctx.beginPath();
+      ctx.fillStyle = "#e11d48";
+      ctx.arc(notchX + notchW * 0.65, notchY + notchH * 0.55, notchH * 0.16, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    function drawPcProBonus() {
+      if (!pcPro.active) return;
+
+      ctx.save();
+      ctx.translate(pcPro.x, pcPro.y);
+
+      const w = pcPro.width;
+      const h = pcPro.height;
+
+      // Main red banner
+      ctx.fillStyle = "#b91c1c";
+      ctx.strokeStyle = "#fef2f2";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(0, 0, w, h, 6);
+      ctx.fill();
+      ctx.stroke();
+
+      // White PC block
+      const pcWidth = w * 0.42;
+      ctx.fillStyle = "#f9fafb";
+      ctx.fillRect(0, 0, pcWidth, h);
+
+      // Text: "PC" in red
+      ctx.fillStyle = "#b91c1c";
+      ctx.font = "bold 16px 'Courier New', monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("PC", pcWidth / 2, h / 2);
+
+      // Text: "PRO" in white
+      ctx.fillStyle = "#fef2f2";
+      ctx.fillText("PRO", pcWidth + (w - pcWidth) / 2, h / 2);
+
+      ctx.restore();
+    }
+
+    function drawBullet(b, fromPlayer) {
+      ctx.save();
+      ctx.fillStyle = fromPlayer ? "#7CFC00" : "#ff5c5c";
+      ctx.fillRect(b.x, b.y, b.width, b.height);
+      ctx.restore();
+    }
+
+    function rectsOverlap(a, b) {
+      return !(
+        a.x > b.x + b.width ||
+        a.x + a.width < b.x ||
+        a.y > b.y + b.height ||
+        a.y + a.height < b.y
+      );
+    }
+
+    function handleInput(dt) {
+      if (keysPressed[KEY.LEFT]) {
+        player.x -= player.speed * dt;
+      }
+      if (keysPressed[KEY.RIGHT]) {
+        player.x += player.speed * dt;
+      }
+
+      const minX = 20;
+      const maxX = WIDTH - player.width - 20;
+      if (player.x < minX) player.x = minX;
+      if (player.x > maxX) player.x = maxX;
+
+      if (state.shootCooldown > 0) {
+        state.shootCooldown -= dt;
+      }
+      const spaceDown = keysPressed[KEY.SPACE] || keysPressed[KEY.SPACE_ALT];
+      if (spaceDown && state.shootCooldown <= 0 && state.running && !state.gameOver) {
+        shootPlayerBullet();
+        state.shootCooldown = SHOOT_COOLDOWN_TIME;
+      }
+    }
+
+    function shootPlayerBullet() {
+      const bulletWidth = 4;
+      const bulletHeight = 14;
+      playerBullets.push({
+        x: player.x + player.width / 2 - bulletWidth / 2,
+        y: player.y - bulletHeight,
+        width: bulletWidth,
+        height: bulletHeight,
+        speed: PLAYER_BULLET_SPEED,
+      });
+    }
+
+    function maybeShootEnemy(dt) {
+      state.enemyShootCooldown -= dt;
+      if (state.enemyShootCooldown > 0) return;
+
+      const aliveEnemies = enemies.filter((e) => e.alive);
+      if (!aliveEnemies.length) return;
+
+      // choose a random column and then the lowest enemy in that column
+      const columns = {};
+      for (const e of aliveEnemies) {
+        const colKey = Math.round(e.x / ENEMY_X_SPACING);
+        if (!columns[colKey] || columns[colKey].y < e.y) {
+          columns[colKey] = e;
+        }
+      }
+      const cols = Object.keys(columns);
+      const randCol = cols[Math.floor(Math.random() * cols.length)];
+      const shooter = columns[randCol];
+
+      const bulletWidth = 4;
+      const bulletHeight = 16;
+      enemyBullets.push({
+        x: shooter.x + shooter.width / 2 - bulletWidth / 2,
+        y: shooter.y + shooter.height + 4,
+        width: bulletWidth,
+        height: bulletHeight,
+        speed: ENEMY_BULLET_SPEED,
+      });
+
+      state.enemyShootCooldown = ENEMY_SHOOT_COOLDOWN_TIME;
+    }
+
+    function updatePcPro(dt) {
+      // Countdown to next spawn if not active
+      if (!pcPro.active) {
+        state.pcProSpawnTimer -= dt;
+        if (state.pcProSpawnTimer <= 0) {
+          pcPro.active = true;
+          pcPro.direction = Math.random() < 0.5 ? 1 : -1;
+          pcPro.y = 40;
+          if (pcPro.direction === 1) {
+            pcPro.x = -pcPro.width - 10;
+          } else {
+            pcPro.x = WIDTH + 10;
+          }
+        }
+      }
+
+      // Move active bonus ship
+      if (pcPro.active) {
+        pcPro.x += pcPro.speed * pcPro.direction * dt;
+        if (pcPro.x > WIDTH + pcPro.width || pcPro.x < -pcPro.width) {
+          pcPro.active = false;
+          state.pcProSpawnTimer = PC_PRO_MIN_DELAY + Math.random() * (PC_PRO_MAX_DELAY - PC_PRO_MIN_DELAY);
+        }
+      }
+    }
+
+    function updateEnemies(dt) {
+      if (!enemies.length) return;
+
+      let hitEdge = false;
+      const speed = state.enemySpeed;
+
+      for (const e of enemies) {
+        if (!e.alive) continue;
+        e.x += speed * state.enemyDirection * dt;
+      }
+
+      for (const e of enemies) {
+        if (!e.alive) continue;
+        if (e.x <= 20 || e.x + e.width >= WIDTH - 20) {
+          hitEdge = true;
+          break;
+        }
+      }
+
+      if (hitEdge) {
+        state.enemyDirection *= -1;
+        for (const e of enemies) {
+          if (!e.alive) continue;
+          e.y += ENEMY_STEP_DOWN;
+          if (e.y + e.height >= player.y + 8) {
+            // reached player line
+            killPlayer();
+            break;
+          }
+        }
+      }
+
+      // if all dead, next level
+      if (enemies.every((e) => !e.alive)) {
+        state.level++;
+        levelEl.textContent = state.level;
+        state.enemySpeed += 18;
+        initEnemies();
+      }
+    }
+
+    function updateBullets(dt) {
+      // player bullets
+      for (const b of playerBullets) {
+        b.y -= b.speed * dt;
+      }
+      playerBullets = playerBullets.filter((b) => b.y + b.height > 0);
+
+      // enemy bullets
+      for (const b of enemyBullets) {
+        b.y += b.speed * dt;
+      }
+      enemyBullets = enemyBullets.filter((b) => b.y < HEIGHT);
+
+      // player bullet vs enemy
+      for (const b of playerBullets) {
+        for (const e of enemies) {
+          if (!e.alive) continue;
+          if (rectsOverlap(b, e)) {
+            e.alive = false;
+            b.y = -999; // mark for removal
+            state.score += 10;
+            scoreEl.textContent = state.score.toString().padStart(4, "0");
+            // slight speed-up as enemies die
+            state.enemySpeed *= 1.01;
+            break;
+          }
+        }
+      }
+      playerBullets = playerBullets.filter((b) => b.y > -100);
+
+      // player bullet vs PC Pro bonus ship
+      if (pcPro.active) {
+        const pcRect = {
+          x: pcPro.x,
+          y: pcPro.y,
+          width: pcPro.width,
+          height: pcPro.height,
+        };
+        for (const b of playerBullets) {
+          if (rectsOverlap(b, pcRect)) {
+            pcPro.active = false;
+            b.y = -999; // mark for removal
+            state.score += PC_PRO_SCORE;
+            scoreEl.textContent = state.score.toString().padStart(4, "0");
+            state.pcProSpawnTimer = PC_PRO_MIN_DELAY + Math.random() * (PC_PRO_MAX_DELAY - PC_PRO_MIN_DELAY);
+            break;
+          }
+        }
+      }
+
+      // enemy bullet vs player
+      const playerRect = {
+        x: player.x,
+        y: player.y,
+        width: player.width,
+        height: player.height,
+      };
+      for (const b of enemyBullets) {
+        if (rectsOverlap(b, playerRect)) {
+          b.y = HEIGHT + 999;
+          killPlayer();
+        }
+      }
+      enemyBullets = enemyBullets.filter((b) => b.y < HEIGHT + 100);
+    }
+
+    function killPlayer() {
+      if (state.gameOver) return;
+      state.lives--;
+      livesEl.textContent = state.lives;
+      enemyBullets = [];
+      playerBullets = [];
+
+      if (state.lives <= 0) {
+        state.gameOver = true;
+        state.running = false;
+        drawGameOver();
+      } else {
+        // soft reset player position
+        player.x = WIDTH / 2 - player.width / 2;
+      }
+    }
+
+    function drawBackground() {
+      // slight glow at bottom as "CRT scanline"
+      const grd = ctx.createLinearGradient(0, HEIGHT - 80, 0, HEIGHT);
+      grd.addColorStop(0, "rgba(124,252,0,0)");
+      grd.addColorStop(1, "rgba(124,252,0,0.25)");
+      ctx.fillStyle = grd;
+      ctx.fillRect(0, HEIGHT - 80, WIDTH, 80);
+    }
+
+    function drawHUDOverlay(text, subtext) {
+      ctx.save();
+      ctx.fillStyle = "rgba(0, 0, 0, 0.65)";
+      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+      ctx.fillStyle = "#7CFC00";
+      ctx.textAlign = "center";
+
+      ctx.font = "28px 'Courier New', monospace";
+      ctx.fillText(text, WIDTH / 2, HEIGHT / 2 - 10);
+
+      ctx.font = "16px 'Courier New', monospace";
+      ctx.fillStyle = "#a0e0a0";
+      ctx.fillText(subtext, WIDTH / 2, HEIGHT / 2 + 24);
+
+      ctx.restore();
+    }
+
+    function drawIntroScreen() {
+      ctx.clearRect(0, 0, WIDTH, HEIGHT);
+      drawBackground();
+      drawHUDOverlay(
+        "Floppy vs Mouse",
+        "Press Enter to start – ← → move, Space to fire"
+      );
+    }
+
+    function drawGameOver() {
+      drawHUDOverlay(
+        "GAME OVER",
+        "Press Enter to restart"
+      );
+    }
+
+    function drawWinSplash() {
+      drawHUDOverlay(
+        "LEVEL UP!",
+        "Floppies upgraded. Press Enter to continue"
+      );
+    }
+
+    function update(timestamp) {
+      if (!state.running && !state.gameOver) {
+        // just keep drawing intro or paused frame
+        requestAnimationFrame(update);
+        return;
+      }
+
+      if (!state.lastTime) state.lastTime = timestamp;
+      const dt = (timestamp - state.lastTime) / 1000;
+      state.lastTime = timestamp;
+
+      ctx.clearRect(0, 0, WIDTH, HEIGHT);
+      drawBackground();
+
+      handleInput(dt);
+      updateEnemies(dt);
+      maybeShootEnemy(dt);
+      updatePcPro(dt);
+      updateBullets(dt);
+
+      // draw enemies
+      for (const e of enemies) {
+        if (!e.alive) continue;
+        drawFloppy(e);
+      }
+
+      // draw PC Pro bonus ship
+      drawPcProBonus();
+
+      // draw bullets
+      for (const b of playerBullets) drawBullet(b, true);
+      for (const b of enemyBullets) drawBullet(b, false);
+
+      // draw player
+      drawMouse(player);
+
+      if (state.gameOver) {
+        drawGameOver();
+      }
+
+      requestAnimationFrame(update);
+    }
+
+    // Input handling
+    window.addEventListener("keydown", (e) => {
+      if (e.key === KEY.LEFT || e.key === KEY.RIGHT || e.key === "a" || e.key === "d") {
+        e.preventDefault();
+      }
+      if (e.code === KEY.SPACE_ALT || e.key === KEY.SPACE) {
+        e.preventDefault();
+      }
+
+      keysPressed[e.key] = true;
+      keysPressed[e.code] = true;
+
+      if (e.key === KEY.ENTER && !state.running) {
+        if (state.gameOver) {
+          resetGame(true);
+        }
+        state.running = true;
+        state.gameOver = false;
+        state.lastTime = 0;
+      }
+    });
+
+    window.addEventListener("keyup", (e) => {
+      keysPressed[e.key] = false;
+      keysPressed[e.code] = false;
+    });
+
+    // Start
+    resetGame(true);
+    requestAnimationFrame(update);
+  </script>
+</body>
+</html>
